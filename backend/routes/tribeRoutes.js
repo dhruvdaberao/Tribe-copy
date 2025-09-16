@@ -1,56 +1,153 @@
 import express from 'express';
-import {
-  createTribe,
-  getTribes,
-  getTribeById,
-  joinTribe,
-  leaveTribe,
-  updateTribe,
-  deleteTribe,
-  sendMessage,
-} from '../controllers/tribeController.js';
-import { protect } from '../middleware/authMiddleware.js';
+import protect from '../middleware/authMiddleware.js';
+import Tribe from '../models/tribeModel.js';
+import TribeMessage from '../models/tribeMessageModel.js';
 
 const router = express.Router();
 
 // @route   POST /api/tribes
 // @desc    Create a new tribe
-// @access  Private
-router.post('/', protect, createTribe);
+router.post('/', protect, async (req, res) => {
+    const { name, description, avatarUrl } = req.body;
+    if (!name || !description) {
+        return res.status(400).json({ message: 'Please provide a name and description' });
+    }
+    try {
+        const tribeExists = await Tribe.findOne({ name });
+        if (tribeExists) {
+            return res.status(400).json({ message: 'A tribe with this name already exists' });
+        }
+        const tribe = new Tribe({
+            name,
+            description,
+            avatarUrl,
+            owner: req.user.id,
+            members: [req.user.id],
+        });
+        const createdTribe = await tribe.save();
+        res.status(201).json(createdTribe);
+    } catch (error) {
+        console.error('Error creating tribe:', error);
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
 // @route   GET /api/tribes
 // @desc    Get all tribes
-// @access  Private
-router.get('/', protect, getTribes);
-
-// @route   GET /api/tribes/:id
-// @desc    Get tribe by ID
-// @access  Private
-router.get('/:id', protect, getTribeById);
-
-// @route   POST /api/tribes/:id/join
-// @desc    Join a tribe
-// @access  Private
-router.post('/:id/join', protect, joinTribe);
-
-// @route   POST /api/tribes/:id/leave
-// @desc    Leave a tribe
-// @access  Private
-router.post('/:id/leave', protect, leaveTribe);
+router.get('/', protect, async (req, res) => {
+    try {
+        const tribes = await Tribe.find({}).populate('owner', 'name username');
+        res.json(tribes);
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
 // @route   PUT /api/tribes/:id
-// @desc    Update tribe (only owner can do this)
-// @access  Private
-router.put('/:id', protect, updateTribe);
+// @desc    Update a tribe
+router.put('/:id', protect, async (req, res) => {
+    const { name, description, avatarUrl } = req.body;
+    try {
+        const tribe = await Tribe.findById(req.params.id);
+        if (!tribe) {
+            return res.status(404).json({ message: 'Tribe not found' });
+        }
+        if (tribe.owner.toString() !== req.user.id) {
+            return res.status(401).json({ message: 'User not authorized' });
+        }
+        tribe.name = name || tribe.name;
+        tribe.description = description || tribe.description;
+        if (avatarUrl !== undefined) {
+          tribe.avatarUrl = avatarUrl;
+        }
+        const updatedTribe = await tribe.save();
+        res.json(updatedTribe);
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
-// @route   DELETE /api/tribes/:id
-// @desc    Delete tribe (only owner can do this)
-// @access  Private
-router.delete('/:id', protect, deleteTribe);
+// @route   PUT /api/tribes/:id/join
+// @desc    Join or leave a tribe
+router.put('/:id/join', protect, async (req, res) => {
+    try {
+        const tribe = await Tribe.findById(req.params.id);
+        if (!tribe) {
+            return res.status(404).json({ message: 'Tribe not found' });
+        }
+        const isMember = tribe.members.some(memberId => memberId.equals(req.user.id));
+        if (isMember) {
+             if (tribe.owner.equals(req.user.id)) {
+                return res.status(400).json({ message: 'Owner cannot leave the tribe' });
+            }
+            tribe.members = tribe.members.filter(memberId => !memberId.equals(req.user.id));
+        } else {
+            tribe.members.push(req.user.id);
+        }
+        await tribe.save();
+        res.json(tribe);
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
+
+// @route   GET /api/tribes/:id/messages
+// @desc    Get all messages for a tribe
+router.get('/:id/messages', protect, async (req, res) => {
+    try {
+        const tribe = await Tribe.findById(req.params.id);
+        if (!tribe) return res.status(404).json({ message: 'Tribe not found' });
+        
+        if (!tribe.members.some(memberId => memberId.equals(req.user.id))) {
+            return res.status(403).json({ message: 'You must be a member to view messages' });
+        }
+        
+        const messages = await TribeMessage.find({ tribe: req.params.id })
+            .sort({ createdAt: 'asc' });
+        
+        res.json(messages);
+
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
 // @route   POST /api/tribes/:id/messages
-// @desc    Send a message to tribe
-// @access  Private
-router.post('/:id/messages', protect, sendMessage);
+// @desc    Post a new message in a tribe
+router.post('/:id/messages', protect, async (req, res) => {
+    const { text, imageUrl } = req.body;
+    if (!text && !imageUrl) {
+        return res.status(400).json({ message: 'Message must have text or an image' });
+    }
+    try {
+        const tribe = await Tribe.findById(req.params.id);
+        if (!tribe) return res.status(404).json({ message: 'Tribe not found' });
+        if (!tribe.members.some(memberId => memberId.equals(req.user.id))) {
+            return res.status(403).json({ message: 'You must be a member to send messages' });
+        }
+        const message = new TribeMessage({
+            tribe: req.params.id,
+            sender: req.user.id,
+            text: text || '',
+            imageUrl: imageUrl || null
+        });
+        const savedMessage = await message.save();
+        const populatedMessage = await TribeMessage.findById(savedMessage._id).populate('sender', 'name username avatarUrl');
+        
+        const responseMessage = {
+            ...populatedMessage.toJSON(),
+            tribeId: req.params.id,
+        };
+
+        // --- WebSocket Emission ---
+        const { io } = req;
+        io.to(req.params.id).emit("newTribeMessage", responseMessage);
+        // --- End WebSocket ---
+        
+        res.status(201).json(responseMessage);
+    } catch (error) {
+        res.status(500).json({ message: 'Server Error' });
+    }
+});
 
 export default router;
