@@ -1,43 +1,56 @@
-import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import { io, Socket } from 'socket.io-client';
-import { useAuth } from './AuthContext';
+import express from 'express';
+import {
+  createTribe,
+  getTribes,
+  getTribeById,
+  joinTribe,
+  leaveTribe,
+  updateTribe,
+  deleteTribe,
+  sendMessage,
+} from '../controllers/tribeController.js';
+import { protect } from '../middleware/authMiddleware.js';
 
-const SocketContext = createContext<Socket | null>(null);
+const router = express.Router();
 
-export const useSocket = () => {
-  return useContext(SocketContext);
-};
+// @route   POST /api/tribes
+// @desc    Create a new tribe
+// @access  Private
+router.post('/', protect, createTribe);
 
+// @route   GET /api/tribes
+// @desc    Get all tribes
+// @access  Private
+router.get('/', protect, getTribes);
 
-export const SocketProvider = ({ children }) => {
-  const [socket, setSocket] = useState<Socket | null>(null);
-  const { currentUser } = useAuth();
+// @route   GET /api/tribes/:id
+// @desc    Get tribe by ID
+// @access  Private
+router.get('/:id', protect, getTribeById);
 
-  useEffect(() => {
-    if (currentUser) {
-      // Establish connection
-      const newSocket = io('http://localhost:5001');
-      setSocket(newSocket);
-      
-      // Register user with the socket server
-      newSocket.emit('addUser', currentUser.id);
+// @route   POST /api/tribes/:id/join
+// @desc    Join a tribe
+// @access  Private
+router.post('/:id/join', protect, joinTribe);
 
-      // Cleanup on component unmount or user logout
-      return () => {
-        newSocket.disconnect();
-      };
-    } else {
-      // If there's no user, disconnect any existing socket
-      if (socket) {
-        socket.disconnect();
-        setSocket(null);
-      }
-    }
-  }, [currentUser]);
+// @route   POST /api/tribes/:id/leave
+// @desc    Leave a tribe
+// @access  Private
+router.post('/:id/leave', protect, leaveTribe);
 
-  return (
-    <SocketContext.Provider value={socket}>
-      {children}
-    </SocketContext.Provider>
-  );
-};
+// @route   PUT /api/tribes/:id
+// @desc    Update tribe (only owner can do this)
+// @access  Private
+router.put('/:id', protect, updateTribe);
+
+// @route   DELETE /api/tribes/:id
+// @desc    Delete tribe (only owner can do this)
+// @access  Private
+router.delete('/:id', protect, deleteTribe);
+
+// @route   POST /api/tribes/:id/messages
+// @desc    Send a message to tribe
+// @access  Private
+router.post('/:id/messages', protect, sendMessage);
+
+export default router;
